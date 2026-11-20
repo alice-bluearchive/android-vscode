@@ -1,0 +1,20 @@
+# 忽略 Termux 系统文件和缓存
+storage/
+.ssh/
+.termux/
+.bash_history
+.config/
+.local/
+cert.pem
+key.pem
+*.deb
+
+# 忽略各种编译产物
+.gradle/
+build/
+app/build/
+
+# 【极其重要】忽略大文件！
+app/src/main/assets/cs.pkg
+app/src/main/assets/bootstrap-aarch64.zip
+app/src/main/assets/code-server.tar.gz

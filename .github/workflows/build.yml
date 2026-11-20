@@ -1,0 +1,99 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 需要拿 original-backup 分支上的 Termux 依赖库
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # Termux 运行时不进 main 分支（给手机上的 git 仓库省 100MB）：
+      # 15 个依赖 so 来自 original-backup 分支，node 二进制从 Termux 官方源下载解压。
+      # 这些库是 Termux 为 Android (Bionic) 编译的，assets 里官方 tar 包自带的
+      # node 是 glibc 版，在 Android 上根本跑不起来，必须用这套替换。
+      - name: Restore Termux runtime
+        run: |
+          set -e
+          git fetch --depth 1 origin original-backup
+          git checkout FETCH_HEAD -- app/src/main/assets/
+          rm -f app/src/main/assets/.gitkeep
+
+          curl -sSLo /tmp/nodejs.deb "https://packages-cf.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.13.1_aarch64.deb"
+          cd /tmp && ar x nodejs.deb data.tar.xz
+          mkdir -p nd && tar -xf data.tar.xz -C nd ./data/data/com.termux/files/usr/bin/node
+          cp nd/data/data/com.termux/files/usr/bin/node \
+             "$GITHUB_WORKSPACE/app/src/main/assets/libnode.so"
+          chmod 644 "$GITHUB_WORKSPACE/app/src/main/assets/libnode.so"
+
+      - name: Verify assets present
+        run: |
+          ls -lh app/src/main/assets/
+          test -f app/src/main/assets/bootstrap-aarch64.zip
+          test -f app/src/main/assets/code-server.tar.gz
+          test -f app/src/main/assets/libnode.so
+          test -f app/src/main/assets/libcrypto.so.3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 清理旧 Release，只保留最近 2 个，失败也不影响构建结果
+      - name: Clean up old releases
+        continue-on-error: true
+        run: |
+          RELEASES=$(gh release list --limit 100 --json tagName -q '.[].tagName' | tail -n +3)
+          for TAG in $RELEASES; do
+            echo "Deleting old release: $TAG"
+            gh release delete "$TAG" -y --cleanup-tag
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 清理旧 workflow runs，只保留最近 5 个，失败也不影响构建结果
+      - name: Clean up old workflow runs
+        continue-on-error: true
+        run: |
+          RUN_IDS=$(gh run list --limit 100 --json databaseId -q '.[].databaseId' | tail -n +6)
+          for ID in $RUN_IDS; do
+            gh run delete "$ID"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
